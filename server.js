@@ -3,11 +3,13 @@ const http = require("http");
 const WebSocket = require("ws");
 const cors = require("cors");
 const mongoose = require("mongoose");
+require("dotenv").config(); // Import and configure dotenv
 
-// Connect to MongoDB
-mongoose.connect("mongodb://localhost:27017/presentation-db", {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
+// Connect to MongoDB using an environment variable
+mongoose.connect(process.env.MONGO_URI, {
+  // These options are now deprecated in Mongoose 6+ and can be removed
+  // useNewUrlParser: true,
+  // useUnifiedTopology: true,
 });
 
 // Presentation schema now includes a 'slides' array
