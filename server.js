@@ -1,5 +1,3 @@
-// server.js
-
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
@@ -186,12 +184,38 @@ wss.on("connection", (ws) => {
           );
 
           broadcastToClients(presentationId, {
-            type: "ADD_SLIDE",
+            type: "UPDATE_SLIDES", // Changed from ADD_SLIDE to UPDATE_SLIDES for a full refresh
             payload: {
               presentation,
               slides: updatedSlides,
             },
           });
+          break;
+
+        case "DELETE_SLIDE":
+          try {
+            const { slideId } = payload;
+
+            // Delete the slide from the 'Slide' collection
+            await Slide.findByIdAndDelete(slideId);
+
+            // Remove the slide reference from the parent presentation document
+            await Presentation.findByIdAndUpdate(presentationId, {
+              $pull: { slides: slideId },
+            });
+
+            // Fetch the updated list of slides and broadcast it
+            const remainingSlides = await Slide.find({ presentationId }).sort(
+              "slideNumber"
+            );
+
+            broadcastToClients(presentationId, {
+              type: "UPDATE_SLIDES",
+              payload: { slides: remainingSlides },
+            });
+          } catch (error) {
+            console.error("Error deleting slide:", error);
+          }
           break;
 
         default:
