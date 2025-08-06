@@ -12,8 +12,15 @@ mongoose.connect("mongodb://localhost:27017/presentation-db", {
   useUnifiedTopology: true,
 });
 
+// Presentation schema now includes a 'slides' array
 const presentationSchema = new mongoose.Schema({
   title: String,
+  slides: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Slide",
+    },
+  ],
 });
 
 const slideSchema = new mongoose.Schema({
@@ -41,13 +48,17 @@ const PORT = 3000;
 app.post("/api/presentations", async (req, res) => {
   try {
     const presentation = new Presentation({ title: "New Presentation" });
-    await presentation.save();
     const slide = new Slide({
       presentationId: presentation._id,
       slideNumber: 1,
       elements: [],
     });
+
+    // Add the slide to the presentation
+    presentation.slides.push(slide._id);
     await slide.save();
+    await presentation.save();
+
     res.status(201).json({ presentationId: presentation._id });
   } catch (error) {
     res.status(500).json({ error: "Failed to create presentation." });
@@ -56,10 +67,12 @@ app.post("/api/presentations", async (req, res) => {
 
 app.get("/api/presentations/:id", async (req, res) => {
   try {
+    // Populate the slides array with actual slide data
     const presentation = await Presentation.findById(req.params.id);
     const slides = await Slide.find({
       presentationId: req.params.id,
     }).sort("slideNumber");
+
     if (!presentation) {
       return res.status(404).json({ error: "Presentation not found." });
     }
@@ -73,6 +86,18 @@ app.get("/api/presentations/:id", async (req, res) => {
     });
   }
 });
+
+// Helper function to broadcast messages to clients in the same presentation
+const broadcastToClients = (presentationId, message) => {
+  wss.clients.forEach((client) => {
+    if (
+      client.readyState === WebSocket.OPEN &&
+      client.presentationId === presentationId
+    ) {
+      client.send(JSON.stringify(message));
+    }
+  });
+};
 
 // WebSocket Connection Logic
 wss.on("connection", (ws) => {
@@ -103,39 +128,37 @@ wss.on("connection", (ws) => {
             }
           );
           // Broadcast the updated slide to all clients in the same presentation
-          wss.clients.forEach((client) => {
-            if (
-              client !== ws &&
-              client.readyState === WebSocket.OPEN &&
-              client.presentationId === presentationId
-            ) {
-              client.send(
-                JSON.stringify({
-                  type: "UPDATE_SLIDE",
-                  payload: { slide: updatedSlide },
-                })
-              );
-            }
+          broadcastToClients(presentationId, {
+            type: "UPDATE_SLIDE",
+            payload: { slide: updatedSlide },
           });
           break;
 
-        // Add the new case for adding a slide
+        // Corrected logic for adding a new slide
         case "ADD_SLIDE":
-          const newSlide = new Slide(payload.slide);
+          const newSlideData = payload.slide;
+          const newSlide = new Slide(newSlideData);
           await newSlide.save();
 
-          wss.clients.forEach((client) => {
-            if (
-              client.readyState === WebSocket.OPEN &&
-              client.presentationId === presentationId
-            ) {
-              client.send(
-                JSON.stringify({
-                  type: "NEW_SLIDE_ADDED",
-                  payload: { slide: newSlide },
-                })
-              );
-            }
+          // Find the presentation and add the new slide's ID
+          const presentation = await Presentation.findById(presentationId);
+          if (presentation) {
+            presentation.slides.push(newSlide._id);
+            await presentation.save();
+          }
+
+          // Fetch all slides to ensure the client has the full, updated list
+          const updatedSlides = await Slide.find({ presentationId }).sort(
+            "slideNumber"
+          );
+
+          // Broadcast the full update to all clients
+          broadcastToClients(presentationId, {
+            type: "ADD_SLIDE",
+            payload: {
+              presentation,
+              slides: updatedSlides,
+            },
           });
           break;
 
