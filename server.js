@@ -99,6 +99,18 @@ const broadcastToClients = (presentationId, message) => {
   });
 };
 
+const presentationUsers = new Map(); // New map to track users by presentationId
+
+// Helper function to broadcast the list of users
+const broadcastUserList = (presentationId) => {
+  const users = Array.from(presentationUsers.get(presentationId) || []);
+  const message = {
+    type: "UPDATE_USERS",
+    payload: { users },
+  };
+  broadcastToClients(presentationId, message);
+};
+
 // WebSocket Connection Logic
 wss.on("connection", (ws) => {
   console.log("New client connected");
@@ -112,7 +124,15 @@ wss.on("connection", (ws) => {
 
       switch (type) {
         case "JOIN_PRESENTATION":
+          const { userNickname } = payload;
           ws.presentationId = presentationId;
+          ws.userNickname = userNickname;
+
+          if (!presentationUsers.has(presentationId)) {
+            presentationUsers.set(presentationId, new Set());
+          }
+          presentationUsers.get(presentationId).add(userNickname);
+          broadcastUserList(presentationId);
           break;
 
         case "ADD_ELEMENT":
@@ -127,32 +147,44 @@ wss.on("connection", (ws) => {
               new: true,
             }
           );
-          // Broadcast the updated slide to all clients in the same presentation
           broadcastToClients(presentationId, {
             type: "UPDATE_SLIDE",
             payload: { slide: updatedSlide },
           });
           break;
 
-        // Corrected logic for adding a new slide
+        case "DELETE_ELEMENT":
+          const slideToDeleteElementFrom = payload.slide;
+          await Slide.findByIdAndUpdate(
+            slideToDeleteElementFrom._id,
+            {
+              elements: slideToDeleteElementFrom.elements,
+            },
+            {
+              new: true,
+            }
+          );
+          broadcastToClients(presentationId, {
+            type: "UPDATE_SLIDE",
+            payload: { slide: slideToDeleteElementFrom },
+          });
+          break;
+
         case "ADD_SLIDE":
           const newSlideData = payload.slide;
           const newSlide = new Slide(newSlideData);
           await newSlide.save();
 
-          // Find the presentation and add the new slide's ID
           const presentation = await Presentation.findById(presentationId);
           if (presentation) {
             presentation.slides.push(newSlide._id);
             await presentation.save();
           }
 
-          // Fetch all slides to ensure the client has the full, updated list
           const updatedSlides = await Slide.find({ presentationId }).sort(
             "slideNumber"
           );
 
-          // Broadcast the full update to all clients
           broadcastToClients(presentationId, {
             type: "ADD_SLIDE",
             payload: {
@@ -172,6 +204,17 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     console.log("Client disconnected");
+    if (ws.presentationId && ws.userNickname) {
+      const users = presentationUsers.get(ws.presentationId);
+      if (users) {
+        users.delete(ws.userNickname);
+        if (users.size === 0) {
+          presentationUsers.delete(ws.presentationId);
+        } else {
+          broadcastUserList(ws.presentationId);
+        }
+      }
+    }
   });
 
   ws.on("error", (error) => {
